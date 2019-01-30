@@ -1,10 +1,12 @@
 # Collapsed-Compilation
+
+
+This repository will contains for "Approximate Knowledge Compilation by Online Collapsed Importance Sampling", as presented at NeurIPS 2018.
+
 Requirements: 
 Scala
 SBT
 Jython standalone jar
-
-This repository will contains for "Approximate Knowledge Compilation by Online Collapsed Importance Sampling", as presented at NeurIPS 2018.
 
 Most of the necessary preprocessing is handled by run_pipeline. It requires a single argument (the uai file), and will output a directory that looks like DBN_11_processed. The source of run_pipeline.sh should be modified with the appropriate location for your jython jar.
 
