@@ -83,8 +83,6 @@ vto for order based on vtree
           } else {
             Compiler.getManager(cnf.max)
           }
-          CNFSampler.doOnlineImportanceSampling(cnf, queries.toList, System.currentTimeMillis()/1000 + config.time, config.size, CNFSampler.orderVtreeLCA(Compiler.getManager(0).getVtree), CNFSampler.nextVarEntropy(queries.toList), CNFSampler.getSDDMarg, (lits.toList, litweights.toList)).foreach(println)
-          // CNFSampler.doOnlineImportanceSampling(cnf, queries.toList, config.time, config.size, CNFSampler.orderRevBFS(queries(0)), CNFSampler.nextVarEntropy(queries.toList), CNFSampler.getSDDMarg, (lits.toList, litweights.toList)).foreach(println)
         } else {
           // Set Vtree
           Compiler.setVtree(Vtree.read(config.vtree))
