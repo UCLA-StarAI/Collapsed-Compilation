@@ -17,7 +17,7 @@ Some example experiments from the paper:
 For experiments that don't use a logical base:
 
 export LD_LIBRARY_PATH=./lib/ && 
-sbt "run -l DBN_11_processed/DBN_11.litmap -u DBN_11_processed/DBN_11.uai -v DBN_11_processed/DBN_11.vtree -d DBN_11_processed/DBN_11sdd/ -q -1 -t 3600 -s 1000000 -H rb -O rev -b DBN_11_processed/DBN_11.base.cnf  -e DBN_11_processed/DBN_11.uai.evid" 
+sbt "run -l DBN_11_processed/DBN_11.litmap -u DBN_11_processed/DBN_11.uai -v DBN_11_processed/DBN_11.vtree -d DBN_11_processed/DBN_11sdd/ -q -1 -t 3600 -s 1000000 -H rbvar -O rev -b DBN_11_processed/DBN_11.base.cnf  -e DBN_11_processed/DBN_11.uai.evid" 
 
 This uses the rao-blackwell variance minimizing heuristic, reverse ordering, a size limit of 100,000 nodes, the last variable as the query, and runs for 1 hour.
 
