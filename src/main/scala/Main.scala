@@ -8,7 +8,7 @@ import java.io.File
 import scala.io.Source
 import scala.collection.mutable.ListBuffer
 
-case class Config(time: Int = -1, size: Int = -1, litmap: String = "", uai: String = "", vtree: String = "", sddDir: String = "", baseCnf: String = "", baseSdd: String = "", heuristic: String = "mi", evidence: String = "", query_var: Int = 0, checkProp: Boolean = false, strictSampling: Boolean = false, trueMarg: Double = -1, order: String="bfs", mem_oracle: Boolean = false, base_vtree: String = "", check_entailment: Boolean = false, dummy: Boolean = false, wcnf: String = "", weights: String = "", prop_dist: String = "")
+case class Config(time: Int = -1, size: Int = -1, allMarg: Boolean = false, litmap: String = "", uai: String = "", vtree: String = "", sddDir: String = "", baseCnf: String = "", baseSdd: String = "", heuristic: String = "mi", evidence: String = "", query_var: Int = 0, checkProp: Boolean = false, strictSampling: Boolean = false, trueMarg: Double = -1, order: String="bfs", mem_oracle: Boolean = false, base_vtree: String = "", check_entailment: Boolean = false, wcnf: String = "", weights: String = "", prop_dist: String = "")
 
 object Main {
   def main(args: Array[String]): Unit = {
@@ -42,7 +42,7 @@ vto for order based on vtree
       // opt[String]("check_firstprop").valueName("<file>").action((x, c) ⇒ c.copy(checkFirstProp=x)).text("Set of correct marginals to compare proposal for first variable to")
       // opt[Double]("true_marg").valueName("<value>").action((x, c) ⇒ c.copy(trueMarg=x)).text("True marginal to compare result with")
       // opt[Unit]("prob_evid").action((_,c) ⇒ c.copy(prEvid=true)).text("Also approximate the partition function Z")
-      // opt[Unit]("all_margs").action((_,c) ⇒ c.copy(allMarg=true)).text("Compute all marginals using one set of samples and random starting points for BFS")
+      opt[Unit]("all_margs").action((_,c) ⇒ c.copy(allMarg=true)).text("Compute all marginals using one set of samples and random starting points for BFS")
       opt[Unit]('M', "member_oracle").action((_,c) ⇒ c.copy(mem_oracle=true)).text("Use a second SDD consisting of the deterministic base + evidence as an oracle for memebership rather than precompiling the base")
       opt[String]('V', "base_vtree").valueName("<file>").action((x,c) ⇒ c.copy(base_vtree=x)).text("The vtree to use for the base CNF/SDD (default is same vtree as factorgraph)")
       opt[Unit]('E', "check_entailment").action((_,c) ⇒ c.copy(check_entailment=true)).text("After you finish conditioning on variables until SDD size falls below threshold, check for any entailed literals using the membership oracle. Must be using the membership oracle as well.")
@@ -56,8 +56,8 @@ vto for order based on vtree
       case Some(config) ⇒
         // Config variables we removed
         val checkFirstProp = ""
-        val allMarg = false
         val prEvid = false
+        val dummy = false
 
         println("Config worked fine")
         if(config.wcnf != "") {
@@ -165,7 +165,7 @@ vto for order based on vtree
             base = null
             if(config.prop_dist != "") {
               Sampler.getGivenMargMember(oracle_wmc, loadProp(config.prop_dist, fg))_
-            } else if(config.dummy) {
+            } else if(dummy) {
               Sampler.getSimpleMargMember(oracle_wmc)_
             } else {
               Sampler.getSDDMargMember(oracle_wmc)_
@@ -173,7 +173,7 @@ vto for order based on vtree
           } else {
             if(config.prop_dist != "") {
               Sampler.getGivenMarg(loadProp(config.prop_dist, fg))_
-            } else if(config.dummy) {
+            } else if(dummy) {
               Sampler.getSimpleMarg _
             } else {
               Sampler.getSDDMarg _
@@ -222,8 +222,8 @@ vto for order based on vtree
             fg.evidence = Map()
             Sampler.doOnlineImportanceSampling(fg, funcs, System.currentTimeMillis()/1000 + config.time, config.size, Sampler.facOrderingRandomBreadthFirst, heur, propMarg, base=base, checkProp=config.checkProp, strictSample=config.strictSampling, mem_oracle=oracle_wmc, doPreComp=false).foreach(println)
             // Sampler.doOnlineImportanceSampling(fg, funcs, config.time, config.size, Sampler.facOrderingRandomBreadthFirst, heur, propMarg, base=base, checkProp=config.checkProp, strictSample=config.strictSampling, mem_oracle=oracle_wmc, doPreComp=false).foreach(println)
-          } else if(allMarg) {
-            Sampler.allMarginalsOnlineSampling(fg, System.currentTimeMillis()/1000 + config.time, config.size, propMarg, base=base).foreach(println)
+          } else if(config.allMarg) {
+            Sampler.allMarginalsOnlineSampling(fg,  config.time, config.size, propMarg, base=base).foreach(println)
             // Sampler.allMarginalsOnlineSampling(fg, config.time, config.size, propMarg, base=base).foreach(println)
           } else {
             // Sample

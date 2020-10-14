@@ -14,7 +14,7 @@ object Sampler {
   var varIndMap: Map[VarNode, Int] = Map()
 
   // Computes all marginals, using size ordering for factors, MI based sampling, and SDD proposal distribution
-  def allMarginalsOnlineSampling(fg: FactorGraph, time:Long, thresh: Int,
+  def allMarginalsOnlineSampling(fg: FactorGraph, numSamples: Int, thresh: Int,
                                  getPropSample: (VarNode, FactorGraph, WmcManager, List[VarNode], List[Int]) ⇒ Tuple2[Int, Double],
                                  base: Sdd = null): List[Double] = {
     // Create appropriate list of functions
@@ -42,14 +42,14 @@ object Sampler {
     }
 
     // Going to take one set of samples and use it for all marginals
-    val margs = doOnlineImportanceSampling(fg, funcs, time, thresh, facOrderingRandomBreadthFirst, nextVarMaximizeFrontierDistance(List()), getPropSample, preComp=(Set(), List(), preSdd), doPreComp=false)
+    val margs = doOnlineImportanceSampling(fg, funcs, 0, thresh, facOrderingRandomBreadthFirst, nextVarMinimizeFrontierVariance, getPropSample, preComp=(Set(), List(), preSdd), doPreComp=false, numSamples = numSamples)
     margs.toList
   }
   // Online sampling, a few things here are made generic:
   // 1: Which order we choose to look at the factors in (currently decided ahead of time, later could change)
   // 2: Which variable should be sampled once we reach our threshold
   // 3: The proposal distribution for a variable being sampled out
-  def doOnlineImportanceSampling(fg: FactorGraph, functions: List[Map[VarNode, List[Boolean]]], maxTime: Long, thresh: Int,
+  def doOnlineImportanceSampling(fg: FactorGraph, functions: List[Map[VarNode, List[Boolean]]], maxTime: Long,thresh: Int,
                                  getOrder: (FactorGraph) ⇒ List[FactorNode],
                                  getNextVar: (Sdd, FactorGraph, List[VarNode], Set[FactorNode]) ⇒ VarNode,
                                  getPropSample: (VarNode, FactorGraph, WmcManager, List[VarNode], List[Int]) ⇒ Tuple2[Int, Double],
@@ -61,8 +61,9 @@ object Sampler {
                                  checkFirstProp: List[Double] = List(),
                                  compZ: Boolean = false,
                                  mem_oracle: WmcManager = null,
-                                 doPreComp: Boolean = true
-                                 ): Array[Double] = {
+                                 doPreComp: Boolean = true,
+                                 numSamples: Int = 0
+                                ): Array[Double] = {
 
     // Construct mapping from vars → ind
     for(i ← fg.vars.indices) {
@@ -147,202 +148,404 @@ object Sampler {
       None
     }
     println("Done")
-    
-    while (System.currentTimeMillis()/1000 < maxTime) {
-    // for(i ← 0 to maxTime.toInt) {
-      // Collect stats on marginals
-      var trueMargIter: ArrayBuffer[Double] = ArrayBuffer[Double]()
-      var propMargIter: ArrayBuffer[Double] = ArrayBuffer[Double]()
-      // Need to keep track of what we've compiled for sampling and also for compiling new factors
-      var compiled: Set[VarNode] = preCompiled.clone()
-      var varsAdded: Set[VarNode] = preCompiled.clone()
-      var sampled: List[VarNode] = List[VarNode]()
-      var samples: List[Int] = List[Int]()
-      // Need to keep track of assignments we've made via sampling
-      var assignments: ArrayBuffer[Long] = ArrayBuffer[Long]()
-      // Sdd accumulator, starts from last thing we compile
-      var sdd: Sdd = preSdd
-      preSdd.ref()
-      // Full SDD "copy"
-      var comparsdd: Option[Sdd] = fullSDD
-      fullSDD match {
-        case Some(sdd) ⇒ sdd.ref()
-        case _ ⇒ None
-      }
+    var sample_count = 0
+    if(numSamples > 0) {
+      while (sample_count < numSamples) {
+        // for(i ← 0 to maxTime.toInt) {
+        // Collect stats on marginals
+        var trueMargIter: ArrayBuffer[Double] = ArrayBuffer[Double]()
+        var propMargIter: ArrayBuffer[Double] = ArrayBuffer[Double]()
+        // Need to keep track of what we've compiled for sampling and also for compiling new factors
+        var compiled: Set[VarNode] = preCompiled.clone()
+        var varsAdded: Set[VarNode] = preCompiled.clone()
+        var sampled: List[VarNode] = List[VarNode]()
+        var samples: List[Int] = List[Int]()
+        sample_count += 1
+        // Need to keep track of assignments we've made via sampling
+        var assignments: ArrayBuffer[Long] = ArrayBuffer[Long]()
+        // Sdd accumulator, starts from last thing we compile
+        var sdd: Sdd = preSdd
+        preSdd.ref()
+        // Full SDD "copy"
+        var comparsdd: Option[Sdd] = fullSDD
+        fullSDD match {
+          case Some(sdd) ⇒ sdd.ref()
+          case _ ⇒ None
+        }
 
-      //println("size of presdd", preSdd.getSize)
-      // Proposal distribution probability accumulator
-      var q: Double = 0.0
-      // Keep track of factors already compiled
-      var compiledFacs: List[FactorNode] = preCompiledFacs
-      // Go through factors
-      for (f ← getOrder(fg).slice(preCompiledFacs.length, facOrder.length)) {
-        
-        // Generate the list of things we can compile from: variables where all factors are already compiled
-        val setcompiled = Set(compiledFacs:_*)
-        // var canBeSampled = compiled.filter(v ⇒ varmap(v).forall(f ⇒ setcompiled.contains(f)))
-        // println(canBeSampled.map(x ⇒ fg.vars.indexOf(x)))
-        // This is where we need to sample stuff, so long as our sdd is too big
-        while (sdd.getSize > thresh && compiled.size > 1) {
-          // Create our weighted model count manager and set weights
-          var wmcman: WmcManager = new WmcManager(sdd, true)
-          wmcman = Compiler.setWeights(wmcman, fg, true)
-          wmcman.propagate()
+        //println("size of presdd", preSdd.getSize)
+        // Proposal distribution probability accumulator
+        var q: Double = 0.0
+        // Keep track of factors already compiled
+        var compiledFacs: List[FactorNode] = preCompiledFacs
+        // Go through factors
+        for (f ← getOrder(fg).slice(preCompiledFacs.length, facOrder.length)) {
 
-          // Choose the variables we're allowed to use based on strictness
-          val canBeSampled = if(strictSample && compiled.filter(v ⇒ varmap(v).forall(f ⇒ setcompiled.contains(f))).size > 1) {
-            compiled.filter(v ⇒ varmap(v).forall(f ⇒ setcompiled.contains(f))).toList
-          } else {
-            compiled.toList
-          }
-          // Sampling
-          val toSample: VarNode = getNextVar(sdd, fg, canBeSampled, setcompiled)
-          
-          sampledCount(toSample) += 1
-          // TODO: If we get nan on our sample, should just skip to the next iteration
-          val sample: Tuple2[Int, Double] = getPropSample(toSample, fg, wmcman, sampled, samples)
+          // Generate the list of things we can compile from: variables where all factors are already compiled
+          val setcompiled = Set(compiledFacs: _*)
+          // var canBeSampled = compiled.filter(v ⇒ varmap(v).forall(f ⇒ setcompiled.contains(f)))
+          // println(canBeSampled.map(x ⇒ fg.vars.indexOf(x)))
+          // This is where we need to sample stuff, so long as our sdd is too big
+          while (sdd.getSize > thresh && compiled.size > 1) {
+            // Create our weighted model count manager and set weights
+            var wmcman: WmcManager = new WmcManager(sdd, true)
+            wmcman = Compiler.setWeights(wmcman, fg, true)
+            wmcman.propagate()
 
-
-          // Compare to real marginal
-          var cowmcman: Option[WmcManager] = comparsdd match {
-            case Some(sdd) ⇒
-              val temp = Compiler.setWeights(new WmcManager(sdd, true), fg, true)
-              temp.propagate()
-              Some(temp)
-            case _ ⇒ None
-          }
-          if(checkProp) {
-            propMargIter.append(sample._2)
-            cowmcman match {
-              case Some(wmc) ⇒ trueMargIter.append(Math.exp(wmc.getProbability(toSample.sddIDs(sample._1))))
-              case _ ⇒ throw new UninitializedError()
-            }
-          }
-
-          // Check if we're on the first variable
-          if(checkProp && samples.size == 0 || checkFirstProp.length > 0) {
-            // First print some summary statistics about the amount of stuff we have to sample from
-            println(s"There are ${compiled.size} variables to choose from")
-            println(s"There are ${compiled.filter(v ⇒ varmap(v).forall(f ⇒ setcompiled.contains(f))).size} variables which are fully compiled in")
-            for(v ← varsAdded) {
-              val ind = fg.vars.indexOf(v)
-              println(s"Variable $ind: ")
-              if(v == toSample) {
-                println("This is the variable our heuristic chose")
-              }
-              println(f"Marginal proposed by currently compiled SDD: ${Math.exp(wmcman.getProbability(v.sddIDs(0)))}%1.5f")
-              cowmcman match {
-                case Some(cwmcman) ⇒
-                  println(f"Marginal according to fully compiled SDD: ${Math.exp(cwmcman.getProbability(v.sddIDs(0)))}%1.5f")
-                case _ ⇒
-                  if(checkFirstProp.length > 0) {
-                    println(f"Marginal according to true marginals given: ${checkFirstProp(ind)}%1.5f")
-                  }
-              }
-              if(varmap(v).forall(f ⇒ setcompiled.contains(f))) {
-                println("All factors have been compiled for this variable")
-              } else {
-                println(s"This variable has ${varmap(v).map(f ⇒ if(setcompiled.contains(f)) 0 else 1).sum} factors which are not yet compiled")
-              }
-              println(s"This variable is distance ${getDistance(v, fg.vars(0), fg)} from variable 0.")
-            }
-            if(checkFirstProp.length > 0) {
-              println("Exiting")
-              return Array[Double]()
-            }
-          }
-          // Update q
-          q += Math.log(sample._2)
-          // Apply sampled value to sdd, update tracked info
-          // Create a log of all the new assignments we're making at an SDD level
-          var newAssignments: ArrayBuffer[Long] = new ArrayBuffer[Long]()
-          for(i ← 0 to toSample.n - 1) {
-            if(i == sample._1) {
-              newAssignments.append(toSample.sddIDs(i))
+            // Choose the variables we're allowed to use based on strictness
+            val canBeSampled = if (strictSample && compiled.filter(v ⇒ varmap(v).forall(f ⇒ setcompiled.contains(f))).size > 1) {
+              compiled.filter(v ⇒ varmap(v).forall(f ⇒ setcompiled.contains(f))).toList
             } else {
-              newAssignments.append(-toSample.sddIDs(i))
+              compiled.toList
+            }
+            // Sampling
+            val toSample: VarNode = getNextVar(sdd, fg, canBeSampled, setcompiled)
+
+            sampledCount(toSample) += 1
+            // TODO: If we get nan on our sample, should just skip to the next iteration
+            val sample: Tuple2[Int, Double] = getPropSample(toSample, fg, wmcman, sampled, samples)
+
+
+            // Compare to real marginal
+            var cowmcman: Option[WmcManager] = comparsdd match {
+              case Some(sdd) ⇒
+                val temp = Compiler.setWeights(new WmcManager(sdd, true), fg, true)
+                temp.propagate()
+                Some(temp)
+              case _ ⇒ None
+            }
+            if (checkProp) {
+              propMargIter.append(sample._2)
+              cowmcman match {
+                case Some(wmc) ⇒ trueMargIter.append(Math.exp(wmc.getProbability(toSample.sddIDs(sample._1))))
+                case _ ⇒ throw new UninitializedError()
+              }
+            }
+
+            // Check if we're on the first variable
+            if (checkProp && samples.size == 0 || checkFirstProp.length > 0) {
+              // First print some summary statistics about the amount of stuff we have to sample from
+              println(s"There are ${compiled.size} variables to choose from")
+              println(s"There are ${compiled.filter(v ⇒ varmap(v).forall(f ⇒ setcompiled.contains(f))).size} variables which are fully compiled in")
+              for (v ← varsAdded) {
+                val ind = fg.vars.indexOf(v)
+                println(s"Variable $ind: ")
+                if (v == toSample) {
+                  println("This is the variable our heuristic chose")
+                }
+                println(f"Marginal proposed by currently compiled SDD: ${Math.exp(wmcman.getProbability(v.sddIDs(0)))}%1.5f")
+                cowmcman match {
+                  case Some(cwmcman) ⇒
+                    println(f"Marginal according to fully compiled SDD: ${Math.exp(cwmcman.getProbability(v.sddIDs(0)))}%1.5f")
+                  case _ ⇒
+                    if (checkFirstProp.length > 0) {
+                      println(f"Marginal according to true marginals given: ${checkFirstProp(ind)}%1.5f")
+                    }
+                }
+                if (varmap(v).forall(f ⇒ setcompiled.contains(f))) {
+                  println("All factors have been compiled for this variable")
+                } else {
+                  println(s"This variable has ${varmap(v).map(f ⇒ if (setcompiled.contains(f)) 0 else 1).sum} factors which are not yet compiled")
+                }
+                println(s"This variable is distance ${getDistance(v, fg.vars(0), fg)} from variable 0.")
+              }
+              if (checkFirstProp.length > 0) {
+                println("Exiting")
+                return Array[Double]()
+              }
+            }
+            // Update q
+            q += Math.log(sample._2)
+            // Apply sampled value to sdd, update tracked info
+            // Create a log of all the new assignments we're making at an SDD level
+            var newAssignments: ArrayBuffer[Long] = new ArrayBuffer[Long]()
+            for (i ← 0 to toSample.n - 1) {
+              if (i == sample._1) {
+                newAssignments.append(toSample.sddIDs(i))
+              } else {
+                newAssignments.append(-toSample.sddIDs(i))
+              }
+            }
+            // Apply it to the sdd
+            sdd = Compiler.conditionSdd(sdd, newAssignments.toArray)
+            comparsdd = comparsdd match {
+              case Some(sdd) ⇒ Some(Compiler.conditionSdd(sdd, newAssignments.toArray))
+              case _ ⇒ None
+            }
+            // track it
+            assignments ++= newAssignments
+            sampled ::= toSample
+            samples ::= sample._1
+            compiled -= toSample
+            // canBeSampled -= toSample
+            wmcman.free()
+            cowmcman match {
+              case Some(wmc) ⇒ wmc.free()
+              case _ ⇒
             }
           }
-          // Apply it to the sdd
-          sdd = Compiler.conditionSdd(sdd, newAssignments.toArray)
-          comparsdd = comparsdd match {
-            case Some(sdd) ⇒ Some(Compiler.conditionSdd(sdd, newAssignments.toArray))
-            case _ ⇒ None
+
+          // Once we've done a round of sampling, should check for entailed literals
+          if (mem_oracle != null) {
+            val res = checkEntailment(mem_oracle, fg, assignments, sampled, samples)
+            // Check if we found anything
+            if (res._1.length > 0) {
+              // Update lists
+              assignments ++= res._3
+              sampled :::= res._2
+              samples :::= res._1
+              compiled --= res._2
+              // Condition sdd
+              sdd = Compiler.conditionSdd(sdd, res._3.toArray)
+              println("here")
+            }
           }
-          // track it
-          assignments ++= newAssignments
-          sampled ::= toSample
-          samples ::= sample._1
-          compiled -= toSample
-          // canBeSampled -= toSample
-          wmcman.free()
-          cowmcman match {
-            case Some(wmc) ⇒ wmc.free()
-            case _ ⇒
+
+          // Get our compiled factor, make assignments and add it
+          facSDD(f).ref
+          sdd = Compiler.conjoinSDD(sdd, Compiler.conditionSdd(condEvid(facSDD(f), f, fg), assignments.toArray))
+          compiledFacs ::= f
+          // Add in variables as necessary
+          for (v <- f.varNodes) {
+            if (!varsAdded.contains(v) && !fg.evidence.contains(v)) {
+              sdd = Compiler.conjoinSDD(sdd, Compiler.compile(v.getCNF))
+              compiled = compiled + v
+              varsAdded = varsAdded + v
+            }
           }
         }
 
-        // Once we've done a round of sampling, should check for entailed literals
-        if(mem_oracle != null) {
-          val res = checkEntailment(mem_oracle, fg, assignments, sampled, samples)
-          // Check if we found anything
-          if(res._1.length > 0) {
-            // Update lists
-            assignments ++= res._3
-            sampled :::= res._2
-            samples :::= res._1
-            compiled --= res._2
-            // Condition sdd
-            sdd = Compiler.conditionSdd(sdd, res._3.toArray)
-            println("here")
+        // Compute denominator once per sample
+        var wmcman: WmcManager = new WmcManager(sdd, true)
+        wmcman = Compiler.setWeights(wmcman, fg, true)
+        val norm = wmcman.propagate()
+        dens.append(Math.log(0.5) * sampled.map(_.n).sum + norm - q)
+        //println(Math.log(0.5)*sampled.length)
+        //println(norm - Math.log(q))
+        // Compute numerator for each function for each sample
+        for (i ← 0 to functions.length - 1) {
+          if (isCompatible(sampled, samples, functions(i))) {
+            Compiler.setFunction(wmcman, compiled.toList, functions(i))
+            val prob = wmcman.propagate()
+            margs += Math.exp(prob - norm)
+            // nums(i).append(wmcman.propagate() - norm + dens(dens.length - 1))
+            nums(i).append(prob - norm + dens(dens.length - 1))
+          }
+        }
+        // For collecting statistics
+        finalNumSamp.append(sampled.size)
+        sampledVars.append(sampled)
+        if (checkProp) {
+          trueMarg.append(trueMargIter)
+          propMarg.append(propMargIter)
+        }
+        wmcman.free
+        sdd.deref
+        comparsdd match {
+          case Some(sdd) ⇒ sdd.deref()
+          case _ ⇒
+        }
+        Compiler.garbageCollect
+      }
+    }
+    else
+    {
+      while (System.currentTimeMillis() / 1000 < maxTime) {
+        // for(i ← 0 to maxTime.toInt) {
+        // Collect stats on marginals
+        var trueMargIter: ArrayBuffer[Double] = ArrayBuffer[Double]()
+        var propMargIter: ArrayBuffer[Double] = ArrayBuffer[Double]()
+        // Need to keep track of what we've compiled for sampling and also for compiling new factors
+        var compiled: Set[VarNode] = preCompiled.clone()
+        var varsAdded: Set[VarNode] = preCompiled.clone()
+        var sampled: List[VarNode] = List[VarNode]()
+        var samples: List[Int] = List[Int]()
+        // Need to keep track of assignments we've made via sampling
+        var assignments: ArrayBuffer[Long] = ArrayBuffer[Long]()
+        // Sdd accumulator, starts from last thing we compile
+        var sdd: Sdd = preSdd
+        preSdd.ref()
+        // Full SDD "copy"
+        var comparsdd: Option[Sdd] = fullSDD
+        fullSDD match {
+          case Some(sdd) ⇒ sdd.ref()
+          case _ ⇒ None
+        }
+
+        //println("size of presdd", preSdd.getSize)
+        // Proposal distribution probability accumulator
+        var q: Double = 0.0
+        // Keep track of factors already compiled
+        var compiledFacs: List[FactorNode] = preCompiledFacs
+        // Go through factors
+        for (f ← getOrder(fg).slice(preCompiledFacs.length, facOrder.length)) {
+
+          // Generate the list of things we can compile from: variables where all factors are already compiled
+          val setcompiled = Set(compiledFacs: _*)
+          // var canBeSampled = compiled.filter(v ⇒ varmap(v).forall(f ⇒ setcompiled.contains(f)))
+          // println(canBeSampled.map(x ⇒ fg.vars.indexOf(x)))
+          // This is where we need to sample stuff, so long as our sdd is too big
+          while (sdd.getSize > thresh && compiled.size > 1) {
+            // Create our weighted model count manager and set weights
+            var wmcman: WmcManager = new WmcManager(sdd, true)
+            wmcman = Compiler.setWeights(wmcman, fg, true)
+            wmcman.propagate()
+
+            // Choose the variables we're allowed to use based on strictness
+            val canBeSampled = if (strictSample && compiled.filter(v ⇒ varmap(v).forall(f ⇒ setcompiled.contains(f))).size > 1) {
+              compiled.filter(v ⇒ varmap(v).forall(f ⇒ setcompiled.contains(f))).toList
+            } else {
+              compiled.toList
+            }
+            // Sampling
+            val toSample: VarNode = getNextVar(sdd, fg, canBeSampled, setcompiled)
+
+            sampledCount(toSample) += 1
+            // TODO: If we get nan on our sample, should just skip to the next iteration
+            val sample: Tuple2[Int, Double] = getPropSample(toSample, fg, wmcman, sampled, samples)
+
+
+            // Compare to real marginal
+            var cowmcman: Option[WmcManager] = comparsdd match {
+              case Some(sdd) ⇒
+                val temp = Compiler.setWeights(new WmcManager(sdd, true), fg, true)
+                temp.propagate()
+                Some(temp)
+              case _ ⇒ None
+            }
+            if (checkProp) {
+              propMargIter.append(sample._2)
+              cowmcman match {
+                case Some(wmc) ⇒ trueMargIter.append(Math.exp(wmc.getProbability(toSample.sddIDs(sample._1))))
+                case _ ⇒ throw new UninitializedError()
+              }
+            }
+
+            // Check if we're on the first variable
+            if (checkProp && samples.size == 0 || checkFirstProp.length > 0) {
+              // First print some summary statistics about the amount of stuff we have to sample from
+              println(s"There are ${compiled.size} variables to choose from")
+              println(s"There are ${compiled.filter(v ⇒ varmap(v).forall(f ⇒ setcompiled.contains(f))).size} variables which are fully compiled in")
+              for (v ← varsAdded) {
+                val ind = fg.vars.indexOf(v)
+                println(s"Variable $ind: ")
+                if (v == toSample) {
+                  println("This is the variable our heuristic chose")
+                }
+                println(f"Marginal proposed by currently compiled SDD: ${Math.exp(wmcman.getProbability(v.sddIDs(0)))}%1.5f")
+                cowmcman match {
+                  case Some(cwmcman) ⇒
+                    println(f"Marginal according to fully compiled SDD: ${Math.exp(cwmcman.getProbability(v.sddIDs(0)))}%1.5f")
+                  case _ ⇒
+                    if (checkFirstProp.length > 0) {
+                      println(f"Marginal according to true marginals given: ${checkFirstProp(ind)}%1.5f")
+                    }
+                }
+                if (varmap(v).forall(f ⇒ setcompiled.contains(f))) {
+                  println("All factors have been compiled for this variable")
+                } else {
+                  println(s"This variable has ${varmap(v).map(f ⇒ if (setcompiled.contains(f)) 0 else 1).sum} factors which are not yet compiled")
+                }
+                println(s"This variable is distance ${getDistance(v, fg.vars(0), fg)} from variable 0.")
+              }
+              if (checkFirstProp.length > 0) {
+                println("Exiting")
+                return Array[Double]()
+              }
+            }
+            // Update q
+            q += Math.log(sample._2)
+            // Apply sampled value to sdd, update tracked info
+            // Create a log of all the new assignments we're making at an SDD level
+            var newAssignments: ArrayBuffer[Long] = new ArrayBuffer[Long]()
+            for (i ← 0 to toSample.n - 1) {
+              if (i == sample._1) {
+                newAssignments.append(toSample.sddIDs(i))
+              } else {
+                newAssignments.append(-toSample.sddIDs(i))
+              }
+            }
+            // Apply it to the sdd
+            sdd = Compiler.conditionSdd(sdd, newAssignments.toArray)
+            comparsdd = comparsdd match {
+              case Some(sdd) ⇒ Some(Compiler.conditionSdd(sdd, newAssignments.toArray))
+              case _ ⇒ None
+            }
+            // track it
+            assignments ++= newAssignments
+            sampled ::= toSample
+            samples ::= sample._1
+            compiled -= toSample
+            // canBeSampled -= toSample
+            wmcman.free()
+            cowmcman match {
+              case Some(wmc) ⇒ wmc.free()
+              case _ ⇒
+            }
+          }
+
+          // Once we've done a round of sampling, should check for entailed literals
+          if (mem_oracle != null) {
+            val res = checkEntailment(mem_oracle, fg, assignments, sampled, samples)
+            // Check if we found anything
+            if (res._1.length > 0) {
+              // Update lists
+              assignments ++= res._3
+              sampled :::= res._2
+              samples :::= res._1
+              compiled --= res._2
+              // Condition sdd
+              sdd = Compiler.conditionSdd(sdd, res._3.toArray)
+              println("here")
+            }
+          }
+
+          // Get our compiled factor, make assignments and add it
+          facSDD(f).ref
+          sdd = Compiler.conjoinSDD(sdd, Compiler.conditionSdd(condEvid(facSDD(f), f, fg), assignments.toArray))
+          compiledFacs ::= f
+          // Add in variables as necessary
+          for (v <- f.varNodes) {
+            if (!varsAdded.contains(v) && !fg.evidence.contains(v)) {
+              sdd = Compiler.conjoinSDD(sdd, Compiler.compile(v.getCNF))
+              compiled = compiled + v
+              varsAdded = varsAdded + v
+            }
           }
         }
 
-        // Get our compiled factor, make assignments and add it
-        facSDD(f).ref
-        sdd = Compiler.conjoinSDD(sdd, Compiler.conditionSdd(condEvid(facSDD(f), f, fg), assignments.toArray))
-        compiledFacs ::= f
-        // Add in variables as necessary
-        for (v <- f.varNodes) {
-          if (!varsAdded.contains(v) && !fg.evidence.contains(v)) {
-            sdd = Compiler.conjoinSDD(sdd, Compiler.compile(v.getCNF))
-            compiled = compiled + v
-            varsAdded = varsAdded + v
+        // Compute denominator once per sample
+        var wmcman: WmcManager = new WmcManager(sdd, true)
+        wmcman = Compiler.setWeights(wmcman, fg, true)
+        val norm = wmcman.propagate()
+        dens.append(Math.log(0.5) * sampled.map(_.n).sum + norm - q)
+        //println(Math.log(0.5)*sampled.length)
+        //println(norm - Math.log(q))
+        // Compute numerator for each function for each sample
+        for (i ← 0 to functions.length - 1) {
+          if (isCompatible(sampled, samples, functions(i))) {
+            Compiler.setFunction(wmcman, compiled.toList, functions(i))
+            val prob = wmcman.propagate()
+            margs += Math.exp(prob - norm)
+            // nums(i).append(wmcman.propagate() - norm + dens(dens.length - 1))
+            nums(i).append(prob - norm + dens(dens.length - 1))
           }
         }
-      }
-      
-      // Compute denominator once per sample
-      var wmcman: WmcManager = new WmcManager(sdd, true)
-      wmcman = Compiler.setWeights(wmcman, fg, true)
-      val norm = wmcman.propagate()
-      dens.append(Math.log(0.5) * sampled.map(_.n).sum +norm - q)
-      //println(Math.log(0.5)*sampled.length)
-      //println(norm - Math.log(q))
-      // Compute numerator for each function for each sample
-      for(i ← 0 to functions.length - 1) {
-        if (isCompatible(sampled, samples, functions(i))) {
-          Compiler.setFunction(wmcman, compiled.toList, functions(i))
-          val prob = wmcman.propagate()
-          margs += Math.exp(prob - norm)
-          // nums(i).append(wmcman.propagate() - norm + dens(dens.length - 1))
-          nums(i).append(prob - norm + dens(dens.length - 1))
+        // For collecting statistics
+        finalNumSamp.append(sampled.size)
+        sampledVars.append(sampled)
+        if (checkProp) {
+          trueMarg.append(trueMargIter)
+          propMarg.append(propMargIter)
         }
+        wmcman.free
+        sdd.deref
+        comparsdd match {
+          case Some(sdd) ⇒ sdd.deref()
+          case _ ⇒
+        }
+        Compiler.garbageCollect
       }
-      // For collecting statistics
-      finalNumSamp.append(sampled.size)
-      sampledVars.append(sampled)
-      if(checkProp) {
-        trueMarg.append(trueMargIter)
-        propMarg.append(propMargIter)
-      }
-      wmcman.free
-      sdd.deref
-      comparsdd match {
-        case Some(sdd) ⇒ sdd.deref()
-        case _ ⇒
-      }
-      Compiler.garbageCollect
     }
     if(preComp == null) {
       preSdd.deref
@@ -760,7 +963,12 @@ object Sampler {
     // frontiervariances.foreach(println)
     // println("Variances for inner terms: ")
     // innervariances.foreach(println)
-    val ret = compiled.minBy(y ⇒ (condwmcs zip frontier).map({case (w, v) ⇒ compRBVarTerm(y, v, wmcman, w)}).max)
+    var ret: VarNode = null
+    if(frontier.length > 0) {
+      ret = compiled.minBy(y ⇒ (condwmcs zip frontier).map({case (w, v) ⇒ compRBVarTerm(y, v, wmcman, w)}).max)
+    } else {
+      ret = compiled(random.nextInt(compiled.length))
+    }
     wmcman.free()
     condSDDs.map(_.deref())
     condwmcs.map(_.free())
