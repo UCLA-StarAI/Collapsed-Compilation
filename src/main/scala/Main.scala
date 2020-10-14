@@ -8,7 +8,7 @@ import java.io.File
 import scala.io.Source
 import scala.collection.mutable.ListBuffer
 
-case class Config(time: Int = -1, size: Int = -1, allMarg: Boolean = false, litmap: String = "", uai: String = "", vtree: String = "", sddDir: String = "", baseCnf: String = "", baseSdd: String = "", heuristic: String = "mi", evidence: String = "", query_var: Int = 0, checkProp: Boolean = false, strictSampling: Boolean = false, trueMarg: Double = -1, order: String="bfs", mem_oracle: Boolean = false, base_vtree: String = "", check_entailment: Boolean = false, wcnf: String = "", weights: String = "", prop_dist: String = "")
+case class Config(time: Int = -1, size: Int = -1, allMarg: Boolean = false, litmap: String = "", uai: String = "", vtree: String = "", sddDir: String = "", baseCnf: String = "", baseSdd: String = "", heuristic: String = "mi", evidence: String = "", query_var: Int = 0, strictSampling: Boolean = false, trueMarg: Double = -1, order: String="bfs", mem_oracle: Boolean = false, base_vtree: String = "", check_entailment: Boolean = false, wcnf: String = "", weights: String = "", prop_dist: String = "", dummy: Boolean = false)
 
 object Main {
   def main(args: Array[String]): Unit = {
@@ -46,7 +46,7 @@ vto for order based on vtree
       opt[Unit]('M', "member_oracle").action((_,c) ⇒ c.copy(mem_oracle=true)).text("Use a second SDD consisting of the deterministic base + evidence as an oracle for memebership rather than precompiling the base")
       opt[String]('V', "base_vtree").valueName("<file>").action((x,c) ⇒ c.copy(base_vtree=x)).text("The vtree to use for the base CNF/SDD (default is same vtree as factorgraph)")
       opt[Unit]('E', "check_entailment").action((_,c) ⇒ c.copy(check_entailment=true)).text("After you finish conditioning on variables until SDD size falls below threshold, check for any entailed literals using the membership oracle. Must be using the membership oracle as well.")
-      // opt[Unit]('D', "dummy_proposal").action((_, c) ⇒ c.copy(dummy=true)).text("Use a dummy uniform proposal distribution")
+      opt[Unit]('D', "dummy_proposal").action((_, c) ⇒ c.copy(dummy=true)).text("Use a dummy uniform proposal distribution")
       // opt[String]("wcnf").valueName("<file>").action((x,c) ⇒ c.copy(wcnf=x)).text("Use this option to do approximate weighted model counting on a CNF. Requires also using the weights flag.")
       // opt[String]("weights").valueName("<file>").action((x,c) ⇒ c.copy(weights=x)).text("File with weights for each literal that's weighted, as well as any queries.")
       // opt[String]("prop_file").valueName("<file>").action((x,c) ⇒ c.copy(prop_dist=x)).text("File with a marginal distribution for each variable to use as a proposal.")
@@ -57,7 +57,7 @@ vto for order based on vtree
         // Config variables we removed
         val checkFirstProp = ""
         val prEvid = false
-        val dummy = false
+        val checkProp = false
 
         println("Config worked fine")
         if(config.wcnf != "") {
@@ -165,7 +165,7 @@ vto for order based on vtree
             base = null
             if(config.prop_dist != "") {
               Sampler.getGivenMargMember(oracle_wmc, loadProp(config.prop_dist, fg))_
-            } else if(dummy) {
+            } else if(config.dummy) {
               Sampler.getSimpleMargMember(oracle_wmc)_
             } else {
               Sampler.getSDDMargMember(oracle_wmc)_
@@ -173,7 +173,7 @@ vto for order based on vtree
           } else {
             if(config.prop_dist != "") {
               Sampler.getGivenMarg(loadProp(config.prop_dist, fg))_
-            } else if(dummy) {
+            } else if(config.dummy) {
               Sampler.getSimpleMarg _
             } else {
               Sampler.getSDDMarg _
@@ -220,14 +220,14 @@ vto for order based on vtree
             val heur = Sampler.nextVarMaximizeFrontierDistance(fg.evidence.keys.toList)_
             // We're treating evidence as a query here, so we actually want our sampling to happen with no evidence
             fg.evidence = Map()
-            Sampler.doOnlineImportanceSampling(fg, funcs, System.currentTimeMillis()/1000 + config.time, config.size, Sampler.facOrderingRandomBreadthFirst, heur, propMarg, base=base, checkProp=config.checkProp, strictSample=config.strictSampling, mem_oracle=oracle_wmc, doPreComp=false).foreach(println)
+            Sampler.doOnlineImportanceSampling(fg, funcs, System.currentTimeMillis()/1000 + config.time, config.size, Sampler.facOrderingRandomBreadthFirst, heur, propMarg, base=base, checkProp=checkProp, strictSample=config.strictSampling, mem_oracle=oracle_wmc, doPreComp=false).foreach(println)
             // Sampler.doOnlineImportanceSampling(fg, funcs, config.time, config.size, Sampler.facOrderingRandomBreadthFirst, heur, propMarg, base=base, checkProp=config.checkProp, strictSample=config.strictSampling, mem_oracle=oracle_wmc, doPreComp=false).foreach(println)
           } else if(config.allMarg) {
             Sampler.allMarginalsOnlineSampling(fg,  config.time, config.size, propMarg, base=base).foreach(println)
             // Sampler.allMarginalsOnlineSampling(fg, config.time, config.size, propMarg, base=base).foreach(println)
           } else {
             // Sample
-            val res = Sampler.getMarginalOnlineImportanceSampling(fg.vars(qv), fg, System.currentTimeMillis()/1000 + config.time, config.size, order, heur, propMarg, base=base, checkProp=config.checkProp, strictSample=config.strictSampling, checkFirstProp=truemarg, mem_oracle=oracle_wmc)
+            val res = Sampler.getMarginalOnlineImportanceSampling(fg.vars(qv), fg, System.currentTimeMillis()/1000 + config.time, config.size, order, heur, propMarg, base=base, checkProp=checkProp, strictSample=config.strictSampling, checkFirstProp=truemarg, mem_oracle=oracle_wmc)
             // val res = Sampler.getMarginalOnlineImportanceSampling(fg.vars(qv), fg, config.time, config.size, order, heur, propMarg, base=base, checkProp=config.checkProp, strictSample=config.strictSampling, checkFirstProp=truemarg, mem_oracle=oracle_wmc)
             res.foreach(println)
             if(config.trueMarg >= 0) {
